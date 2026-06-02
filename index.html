@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Hamburg Tourplaner</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f3f6fb;
+      color: #142033;
+    }
+    .app {
+      display: grid;
+      grid-template-columns: 430px 1fr;
+      gap: 16px;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .panel, .mapbox {
+      background: white;
+      border: 1px solid #d9e0ea;
+      border-radius: 18px;
+      box-shadow: 0 8px 30px rgba(20,30,50,.08);
+      overflow: hidden;
+    }
+    .panel {
+      padding: 18px;
+      overflow-y: auto;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+    p {
+      color: #667085;
+      line-height: 1.45;
+    }
+    label {
+      display: block;
+      font-weight: 750;
+      margin: 16px 0 8px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 250px;
+      resize: vertical;
+      padding: 12px;
+      border: 1px solid #cfd7e3;
+      border-radius: 14px;
+      font: inherit;
+      line-height: 1.4;
+    }
+    .buttons {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+      background: #eef2f8;
+      color: #172033;
+    }
+    button.primary {
+      background: #0b6efd;
+      color: white;
+    }
+    button.danger {
+      background: #fff0f2;
+      color: #a4001d;
+    }
+    button:disabled {
+      opacity: .55;
+      cursor: not-allowed;
+    }
+    #status {
+      display: none;
+      white-space: pre-line;
+      margin-top: 12px;
+      padding: 11px 12px;
+      border-radius: 12px;
+      background: #eef5ff;
+      color: #163b73;
+      font-size: 14px;
+    }
+    #status.error {
+      background: #fff0f2;
+      color: #a4001d;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .stat {
+      border: 1px solid #d9e0ea;
+      background: #f8fafc;
+      border-radius: 14px;
+      padding: 11px;
+    }
+    .stat span {
+      display: block;
+      font-size: 13px;
+      color: #667085;
+    }
+    .stat strong {
+      display: block;
+      font-size: 20px;
+      margin-top: 3px;
+    }
+    h2 {
+      font-size: 18px;
+      margin: 20px 0 8px;
+    }
+    ol {
+      padding-left: 24px;
+    }
+    li {
+      margin: 8px 0;
+      line-height: 1.35;
+    }
+    small {
+      display: block;
+      color: #667085;
+    }
+    .note {
+      border-top: 1px solid #e6ebf2;
+      padding-top: 12px;
+      font-size: 13px;
+    }
+    .mapbox, #map {
+      min-height: calc(100vh - 32px);
+      height: calc(100vh - 32px);
+    }
+    @media (max-width: 950px) {
+      .app { grid-template-columns: 1fr; }
+      .mapbox, #map { min-height: 520px; height: 520px; }
+    }
+  </style>
+</head>
+
+<body>
+<div class="app">
+  <section class="panel">
+    <h1>Hamburg Tourplaner</h1>
+    <p>
+      Excel-Adressen einfügen. Die Tour ist immer offen und startet automatisch südlich von Hamburg.
+      Maximal 20 Adressen.
+    </p>
+
+    <label for="addresses">Adressen aus Excel einfügen</label>
+    <textarea id="addresses" placeholder="Beispiel:
+Mönckebergstraße 7
+Jungfernstieg 16
+Reeperbahn 1
+Eppendorfer Baum 22"></textarea>
+
+    <div class="buttons">
+      <button class="primary" id="btnPlan" onclick="planRoute()">Tour berechnen</button>
+      <button onclick="cleanInput()">Eingabe bereinigen</button>
+      <button onclick="copyOrder()">Reihenfolge kopieren</button>
+      <button onclick="openGoogleMaps()">Google Maps öffnen</button>
+      <button class="danger" onclick="clearAll()">Leeren</button>
+    </div>
+
+    <div id="status"></div>
+
+    <div class="stats">
+      <div class="stat">
+        <span>Distanz</span>
+        <strong id="distance">–</strong>
+      </div>
+      <div class="stat">
+        <span>Fahrzeit</span>
+        <strong id="duration">–</strong>
+      </div>
+    </div>
+
+    <h2>Optimierte Reihenfolge</h2>
+    <ol id="orderedList"></ol>
+
+    <p class="note">
+      Hinweis: Diese einfache Version nutzt kostenlose öffentliche Kartendienste.
+      Für wenige Touren pro Tag ist das okay. Für intensive Nutzung wäre später eine professionelle Routing-API besser.
+    </p>
+  </section>
+
+  <section class="mapbox">
+    <div id="map"></div>
+  </section>
+</div>
+
+<script>
+  const MAX_ADDRESSES = 20;
+
+  const START = {
+    short: "Start südlich von Hamburg",
+    label: "Automatischer Startpunkt südlich von Hamburg / Harburg",
+    lat: 53.409,
+    lon: 9.989
+  };
+
+  let map;
+  let markers = [];
+  let routeLine = null;
+  let lastOrdered = [];
+  let lastGoogleMapsUrl = "";
+
+  function init() {
+    if (typeof L === "undefined") {
+      showStatus("Karte konnte nicht geladen werden. Bitte Internetverbindung prüfen.", true);
+      return;
+    }
+
+    map = L.map("map").setView([53.5511, 9.9937], 10);
+
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap-Mitwirkende"
+    }).addTo(map);
+  }
+
+  window.addEventListener("load", init);
+
+  function showStatus(msg, isError = false) {
+    const el = document.getElementById("status");
+    el.textContent = msg;
+    el.className = isError ? "error" : "";
+    el.style.display = "block";
+  }
+
+  function hideStatus() {
+    const el = document.getElementById("status");
+    el.textContent = "";
+    el.className = "";
+    el.style.display = "none";
+  }
+
+  function parseExcel(text) {
+    return text
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => {
+        const cells = line.split(/\t|;/).map(c => c.trim()).filter(Boolean);
+        return cells.length ? cells[0] : line;
+      })
+      .map(line => line.replace(/^"|"$/g, "").trim())
+      .filter(Boolean);
+  }
+
+  function cleanInput() {
+    const input = document.getElementById("addresses");
+    const addresses = parseExcel(input.value);
+    input.value = addresses.join("\n");
+    showStatus(addresses.length + " Adressen erkannt und bereinigt.");
+  }
+
+  function normalizeAddress(address) {
+    const lower = address.toLowerCase();
+    if (lower.includes("hamburg") || lower.includes("deutschland") || lower.includes("germany")) {
+      return address;
+    }
+    return address + ", Hamburg, Deutschland";
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function fetchJson(url, timeoutMs = 20000) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      return await response.json();
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function geocode(address) {
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.searchParams.set("format", "jsonv2");
+    url.searchParams.set("limit", "1");
+    url.searchParams.set("countrycodes", "de");
+    url.searchParams.set("q", normalizeAddress(address));
+
+    const data = await fetchJson(url.toString(), 20000);
+
+    if (!data.length) {
+      throw new Error("Adresse nicht gefunden: " + address);
+    }
+
+    return {
+      short: address,
+      label: data[0].display_name,
+      lat: Number(data[0].lat),
+      lon: Number(data[0].lon)
+    };
+  }
+
+  function haversine(a, b) {
+    const R = 6371;
+    const dLat = (b.lat - a.lat) * Math.PI / 180;
+    const dLon = (b.lon - a.lon) * Math.PI / 180;
+    const lat1 = a.lat * Math.PI / 180;
+    const lat2 = b.lat * Math.PI / 180;
+
+    const x =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+
+    return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+  }
+
+  function routeDistance(order, points) {
+    let total = 0;
+    for (let i = 0; i < order.length - 1; i++) {
+      total += haversine(points[order[i]], points[order[i + 1]]);
+    }
+    return total;
+  }
+
+  function nearestNeighbor(points) {
+    const remaining = new Set(points.map((_, i) => i));
+    const order = [0];
+    remaining.delete(0);
+
+    while (remaining.size) {
+      const current = points[order[order.length - 1]];
+      let best = null;
+      let bestDist = Infinity;
+
+      for (const idx of remaining) {
+        const d = haversine(current, points[idx]);
+        if (d < bestDist) {
+          best = idx;
+          bestDist = d;
+        }
+      }
+
+      order.push(best);
+      remaining.delete(best);
+    }
+
+    return twoOpt(order, points);
+  }
+
+  function twoOpt(order, points) {
+    let best = order.slice();
+    let bestDist = routeDistance(best, points);
+    let improved = true;
+
+    while (improved) {
+      improved = false;
+
+      for (let i = 1; i < best.length - 2; i++) {
+        for (let k = i + 1; k < best.length - 1; k++) {
+          const candidate = best
+            .slice(0, i)
+            .concat(best.slice(i, k + 1).reverse())
+            .concat(best.slice(k + 1));
+
+          const dist = routeDistance(candidate, points);
+
+          if (dist + 0.0001 < bestDist) {
+            best = candidate;
+            bestDist = dist;
+            improved = true;
+          }
+        }
+      }
+    }
+
+    return best;
+  }
+
+  async function getRoute(points) {
+    const coords = points.map(p => p.lon + "," + p.lat).join(";");
+    const url = "https://router.project-osrm.org/route/v1/driving/" +
+      coords +
+      "?overview=full&geometries=geojson&steps=false";
+
+    const data = await fetchJson(url, 25000);
+
+    if (!data.routes || !data.routes.length) {
+      throw new Error("Keine Route gefunden.");
+    }
+
+    return data.routes[0];
+  }
+
+  function draw(points, route) {
+    markers.forEach(m => map.removeLayer(m));
+    markers = [];
+
+    if (routeLine) {
+      map.removeLayer(routeLine);
+      routeLine = null;
+    }
+
+    points.forEach((p, i) => {
+      const marker = L.marker([p.lat, p.lon])
+        .addTo(map)
+        .bindPopup("<strong>" + (i === 0 ? "Start" : i + ". Stopp") + "</strong><br>" + escapeHtml(p.short));
+      markers.push(marker);
+    });
+
+    routeLine = L.geoJSON({
+      type: "Feature",
+      properties: {},
+      geometry: route.geometry
+    }, { weight: 5 }).addTo(map);
+
+    const group = L.featureGroup([...markers, routeLine]);
+    map.fitBounds(group.getBounds().pad(0.15));
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, s => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;"
+    }[s]));
+  }
+
+  function render(points, route) {
+    lastOrdered = points;
+    lastGoogleMapsUrl = createGoogleMapsUrl(points);
+
+    document.getElementById("distance").textContent = (route.distance / 1000).toFixed(1) + " km";
+
+    const mins = Math.round(route.duration / 60);
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    document.getElementById("duration").textContent = h ? h + " h " + m + " min" : m + " min";
+
+    const ol = document.getElementById("orderedList");
+    ol.innerHTML = "";
+
+    points.forEach((p, i) => {
+      const li = document.createElement("li");
+      li.innerHTML = "<strong>" + (i === 0 ? "Start: " : "") + escapeHtml(p.short) + "</strong><small>" + escapeHtml(p.label) + "</small>";
+      ol.appendChild(li);
+    });
+  }
+
+  function createGoogleMapsUrl(points) {
+    const origin = points[0].lat + "," + points[0].lon;
+    const destination = points[points.length - 1].lat + "," + points[points.length - 1].lon;
+    const middle = points.slice(1, -1).map(p => p.lat + "," + p.lon).join("|");
+
+    let url = "https://www.google.com/maps/dir/?api=1&origin=" +
+      encodeURIComponent(origin) +
+      "&destination=" +
+      encodeURIComponent(destination) +
+      "&travelmode=driving";
+
+    if (middle) {
+      url += "&waypoints=" + encodeURIComponent(middle);
+    }
+
+    return url;
+  }
+
+  async function planRoute() {
+    if (!map) {
+      showStatus("Karte ist noch nicht geladen. Bitte kurz warten und erneut klicken.", true);
+      return;
+    }
+
+    hideStatus();
+    document.getElementById("btnPlan").disabled = true;
+    document.getElementById("btnPlan").textContent = "Berechne...";
+
+    try {
+      const input = document.getElementById("addresses");
+      const addresses = parseExcel(input.value);
+      input.value = addresses.join("\n");
+
+      if (!addresses.length) {
+        throw new Error("Bitte mindestens eine Adresse eingeben.");
+      }
+
+      if (addresses.length > MAX_ADDRESSES) {
+        throw new Error("Bitte maximal " + MAX_ADDRESSES + " Adressen eingeben.");
+      }
+
+      const geocoded = [];
+
+      for (let i = 0; i < addresses.length; i++) {
+        showStatus("Adresse " + (i + 1) + "/" + addresses.length + " wird gesucht:\n" + addresses[i]);
+        geocoded.push(await geocode(addresses[i]));
+        if (i < addresses.length - 1) await sleep(1100);
+      }
+
+      const allPoints = [START, ...geocoded];
+
+      showStatus("Tour wird optimiert...");
+      const order = nearestNeighbor(allPoints);
+      const ordered = order.map(i => allPoints[i]);
+
+      showStatus("Route wird berechnet...");
+      const route = await getRoute(ordered);
+
+      draw(ordered, route);
+      render(ordered, route);
+
+      showStatus("Fertig. Offene Tour ab südlich Hamburg berechnet.");
+    } catch (err) {
+      console.error(err);
+      showStatus("Fehler: " + (err.message || err) + "\n\nTipp: Bitte Straße mit Hausnummer verwenden.", true);
+    } finally {
+      document.getElementById("btnPlan").disabled = false;
+      document.getElementById("btnPlan").textContent = "Tour berechnen";
+    }
+  }
+
+  async function copyOrder() {
+    if (!lastOrdered.length) {
+      showStatus("Noch keine Tour berechnet.", true);
+      return;
+    }
+
+    const text = lastOrdered
+      .map((p, i) => (i === 0 ? "Start: " : i + ". ") + p.short)
+      .join("\n");
+
+    await navigator.clipboard.writeText(text);
+    showStatus("Reihenfolge kopiert.");
+  }
+
+  function openGoogleMaps() {
+    if (!lastGoogleMapsUrl) {
+      showStatus("Noch keine Tour berechnet.", true);
+      return;
+    }
+
+    window.open(lastGoogleMapsUrl, "_blank");
+  }
+
+  function clearAll() {
+    document.getElementById("addresses").value = "";
+    document.getElementById("orderedList").innerHTML = "";
+    document.getElementById("distance").textContent = "–";
+    document.getElementById("duration").textContent = "–";
+    lastOrdered = [];
+    lastGoogleMapsUrl = "";
+    hideStatus();
+
+    markers.forEach(m => map.removeLayer(m));
+    markers = [];
+
+    if (routeLine) {
+      map.removeLayer(routeLine);
+      routeLine = null;
+    }
+
+    if (map) map.setView([53.5511, 9.9937], 10);
+  }
+</script>
+</body>
+</html>
